@@ -12,10 +12,19 @@ class SnakeGame:
     MOVE_DELAY = 50  # milliseconds between moves (in addition to animation)
     ANIMATION_STEPS = 5
     FRAME_DELAY = 20  # milliseconds between animation frames
+    SEGMENT_INSET_RATIO = 0.12
+
+    BACKGROUND_COLOR = "#2e7d32"
+    HEAD_COLOR = "#558b2f"
+    BODY_COLORS = ("#8bc34a", "#7cb342")
+    EYE_COLOR = "white"
+    PUPIL_COLOR = "#1b5e20"
+    FOOD_COLOR = "#d32f2f"
 
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Змейка")
+        self.root.configure(bg=self.BACKGROUND_COLOR)
 
         canvas_width = self.COLUMNS * self.CELL_SIZE
         canvas_height = self.ROWS * self.CELL_SIZE
@@ -23,14 +32,20 @@ class SnakeGame:
         self.score_var = tk.StringVar()
         self.score_var.set("Счёт: 0")
 
-        self.score_label = tk.Label(self.root, textvariable=self.score_var, font=("Arial", 14))
+        self.score_label = tk.Label(
+            self.root,
+            textvariable=self.score_var,
+            font=("Arial", 14),
+            bg=self.BACKGROUND_COLOR,
+            fg="white",
+        )
         self.score_label.pack(pady=5)
 
         self.canvas = tk.Canvas(
             self.root,
             width=canvas_width,
             height=canvas_height,
-            bg="black",
+            bg=self.BACKGROUND_COLOR,
             highlightthickness=0,
         )
         self.canvas.pack()
@@ -50,6 +65,9 @@ class SnakeGame:
         self.segment_ids: List[int] = []
         self.food_id: Optional[int] = None
         self.overlay_id: Optional[int] = None
+        self.head_feature_ids: List[int] = []
+
+        self.segment_inset = self.CELL_SIZE * self.SEGMENT_INSET_RATIO
 
         self.animation_token = 0
 
@@ -68,14 +86,23 @@ class SnakeGame:
         self.update_score()
         self.canvas.delete("all")
         self.segment_ids = [
-            self.canvas.create_rectangle(*self.cell_rect(x, y), fill="lime", outline="")
+            self.canvas.create_oval(
+                *self.cell_rect(x, y, inset=self.segment_inset),
+                fill=self.BODY_COLORS[0],
+                outline="",
+            )
             for x, y in self.snake
         ]
         self.food_id = None
         if self.overlay_id is not None:
             self.canvas.delete(self.overlay_id)
             self.overlay_id = None
+        for feature_id in self.head_feature_ids:
+            self.canvas.delete(feature_id)
+        self.head_feature_ids = []
         self.place_food()
+        self.apply_segment_styles()
+        self.update_head_features(force_create=True)
         self.schedule_move()
 
     def change_direction(self, new_direction: Tuple[int, int]) -> None:
@@ -91,6 +118,7 @@ class SnakeGame:
         if (current_dx + new_dx, current_dy + new_dy) == (0, 0):
             return
         self.direction = new_direction
+        self.update_head_features()
 
     def schedule_move(self) -> None:
         if self.running and not self.is_animating:
@@ -122,15 +150,20 @@ class SnakeGame:
             self.snake.pop()
 
         if ate_food:
-            head_coords = old_coords[0] if old_coords else self.cell_rect(*new_head)
-            new_head_id = self.canvas.create_rectangle(
-                *head_coords, fill="lime", outline=""
+            head_coords = (
+                old_coords[0]
+                if old_coords
+                else list(self.cell_rect(*new_head, inset=self.segment_inset))
             )
+            new_head_id = self.canvas.create_oval(*head_coords, fill=self.HEAD_COLOR, outline="")
             old_segment_ids.insert(0, new_head_id)
             old_coords.insert(0, list(head_coords))
 
         self.segment_ids = old_segment_ids
-        new_coords = [self.cell_rect(x, y) for x, y in self.snake]
+        self.apply_segment_styles()
+        new_coords = [
+            self.cell_rect(x, y, inset=self.segment_inset) for x, y in self.snake
+        ]
         token = self.animation_token
         self.animate_segments(self.segment_ids, old_coords, new_coords, token=token)
 
@@ -164,9 +197,11 @@ class SnakeGame:
                 self.food_id = None
             return
 
-        x1, y1, x2, y2 = self.cell_rect(*self.food, inset=self.CELL_SIZE * 0.2)
+        x1, y1, x2, y2 = self.cell_rect(*self.food, inset=self.CELL_SIZE * 0.25)
         if self.food_id is None:
-            self.food_id = self.canvas.create_oval(x1, y1, x2, y2, fill="red", outline="")
+            self.food_id = self.canvas.create_oval(
+                x1, y1, x2, y2, fill=self.FOOD_COLOR, outline=""
+            )
         else:
             self.canvas.coords(self.food_id, x1, y1, x2, y2)
 
@@ -198,6 +233,7 @@ class SnakeGame:
         if step >= self.ANIMATION_STEPS:
             for segment_id, coords in zip(segment_ids, end_coords):
                 self.canvas.coords(segment_id, *coords)
+            self.update_head_features()
             self.is_animating = False
             self.schedule_move()
             return
@@ -208,6 +244,7 @@ class SnakeGame:
                 start[i] + (end[i] - start[i]) * progress for i in range(4)
             ]
             self.canvas.coords(segment_id, *interpolated)
+        self.update_head_features()
 
         self.root.after(
             self.FRAME_DELAY,
@@ -241,6 +278,98 @@ class SnakeGame:
 
     def start(self) -> None:
         self.root.mainloop()
+
+    def apply_segment_styles(self) -> None:
+        if not self.segment_ids:
+            return
+        for index, segment_id in enumerate(self.segment_ids):
+            if index == 0:
+                color = self.HEAD_COLOR
+            else:
+                color = self.BODY_COLORS[(index - 1) % len(self.BODY_COLORS)]
+            self.canvas.itemconfig(segment_id, fill=color)
+
+    def update_head_features(self, *, force_create: bool = False) -> None:
+        if not self.segment_ids:
+            return
+
+        head_coords = self.canvas.coords(self.segment_ids[0])
+        if not head_coords:
+            return
+
+        eye_coords, pupil_coords = self._compute_eye_positions(head_coords)
+        all_coords = eye_coords + pupil_coords
+
+        if not self.head_feature_ids or force_create:
+            for feature_id in self.head_feature_ids:
+                self.canvas.delete(feature_id)
+            self.head_feature_ids = []
+            colors = [self.EYE_COLOR, self.EYE_COLOR, self.PUPIL_COLOR, self.PUPIL_COLOR]
+            for color, coords in zip(colors, all_coords):
+                feature_id = self.canvas.create_oval(*coords, fill=color, outline="")
+                self.head_feature_ids.append(feature_id)
+        else:
+            for feature_id, coords in zip(self.head_feature_ids, all_coords):
+                self.canvas.coords(feature_id, *coords)
+        for feature_id in self.head_feature_ids:
+            self.canvas.tag_raise(feature_id)
+
+    def _compute_eye_positions(
+        self, head_coords: List[float]
+    ) -> Tuple[List[Tuple[float, float, float, float]], List[Tuple[float, float, float, float]]]:
+        x1, y1, x2, y2 = head_coords
+        center_x = (x1 + x2) / 2
+        center_y = (y1 + y2) / 2
+        radius = (x2 - x1) / 2
+
+        forward_offset = radius * 0.7
+        side_offset = radius * 0.55
+        eye_radius = radius * 0.35
+        pupil_radius = eye_radius * 0.4
+
+        dx, dy = self.direction
+        if dx != 0:
+            base_x = center_x + dx * forward_offset
+            left_center = (base_x, center_y - side_offset)
+            right_center = (base_x, center_y + side_offset)
+        else:
+            base_y = center_y + dy * forward_offset
+            left_center = (center_x - side_offset, base_y)
+            right_center = (center_x + side_offset, base_y)
+
+        def oval_bounds(cx: float, cy: float, r: float) -> Tuple[float, float, float, float]:
+            return (cx - r, cy - r, cx + r, cy + r)
+
+        eye_bounds = [
+            oval_bounds(*left_center, eye_radius),
+            oval_bounds(*right_center, eye_radius),
+        ]
+        pupil_shift = radius * 0.3
+        if dx != 0:
+            pupil_left_center = (
+                left_center[0] + dx * pupil_shift,
+                left_center[1],
+            )
+            pupil_right_center = (
+                right_center[0] + dx * pupil_shift,
+                right_center[1],
+            )
+        else:
+            pupil_left_center = (
+                left_center[0],
+                left_center[1] + dy * pupil_shift,
+            )
+            pupil_right_center = (
+                right_center[0],
+                right_center[1] + dy * pupil_shift,
+            )
+
+        pupil_bounds = [
+            oval_bounds(*pupil_left_center, pupil_radius),
+            oval_bounds(*pupil_right_center, pupil_radius),
+        ]
+
+        return eye_bounds, pupil_bounds
 
 
 def main() -> None:
